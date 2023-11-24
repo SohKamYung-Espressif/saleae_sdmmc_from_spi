@@ -90,8 +90,11 @@ COMMAND_INFO = {
     # Application-specific commands (class 8)
     55: ("APP_CMD", 1),
     56: ("GEN_CMD", 1),
+    # Force SDIO interpretation
+    52: ("IO_RW_DIRECT", 5),
+    53: ("IO_RW_EXTENDED", 5),
     # Security Protocols (class 1None)
-    53: ("PROTOCOL_RD", 1),
+    #53: ("PROTOCOL_RD", 1),
     54: ("PROTOCOL_WR", 1),
     # Command Queues (class 11)
     44: ("QUEUED_TASK_PARAMS", 1),
@@ -152,7 +155,50 @@ def interpret_command(bits):
         info = get_command_name(command_index) + " (CMD%d)" % command_index
     else:
         info = "CMD%d" % command_index
-    info += ", arg:%d" % argument
+    if (command_index == 53):
+        #SDIO CMD 53: decode argument
+        info += ", "
+        r_w_flag = bits[8]
+        if r_w_flag:
+            info += "W|"
+        else:
+            info += "R|"
+        card_fn = value_from_bits(bits[9:12])
+        info += "Fn %d|" % card_fn
+        block_mode = bits[12]
+        if block_mode:
+            info += "Blk|"
+        else:
+            info += "Byte|"
+        op_code = bits[13]
+        if op_code:
+            info += "Incr|"
+        else:
+            info += "Fixed|"
+        reg_address = value_from_bits(bits[14:31])
+        info += "Reg %s|" % hex(reg_address)
+        count = value_from_bits(bits[31:40])
+        info += "Count %d" % count
+    elif (command_index == 52):
+        #SDIO CMD 52: decode argument
+        info += ", "
+        r_w_flag = bits[8]
+        if r_w_flag:
+            info += "W|"
+        else:
+            info += "R|"
+        card_fn = value_from_bits(bits[9:12])
+        info += "Fn %d|" % card_fn
+        raw = bits[12]
+        info += "RAW %d|" % raw
+
+        reg_address = value_from_bits(bits[14:31])
+        info += "Reg %s|" % hex(reg_address)
+        if r_w_flag:
+            data = value_from_bits(bits[32:40])
+            info += "W: %s" % hex(data)
+    else:
+        info += ", arg:%d" % argument
     if not okay:
         info += ", ERROR"
     return info
@@ -245,6 +291,42 @@ def interpret_response3(bits):
     info = "R3, %s" % ("READY" if ocr_register[0] else "BUSY")
     return info
 
+def interpret_response5(bits):
+    """Return a string description from the response 5 bits."""
+    assert len(bits) == 48
+    okay = True
+    start_bit = bits[0]
+    transmission_bit = bits[1]
+    command_index = value_from_bits(bits[2:8])
+    crc7 = value_from_bits(bits[40:47])
+    end_bit = value_from_bits(bits[47:48])
+    if start_bit or transmission_bit or not end_bit:
+        okay = False
+    if (command_index == 53) or (command_index == 52):
+        #for SDIO CMD53 or CMD52, response is type R5
+        info = "R5, CMD53,"
+        if bits[24]:
+            info += "CRC Err|"
+        if bits[25]:
+            info += "ILLEGAL Cmd|"
+        io_state = value_from_bits(bits[26:28])
+        if (io_state == 0):
+            info += "DIS|"
+        elif (io_state == 1):
+            info += "CMD|"
+        elif (io_state == 2):
+            info += "TRN|"
+        if bits[28]:
+            info += "ERR|"
+        if bits[30]:
+            info += "FN|"
+        if bits[31]:
+            info += "RANGE|"
+        info = info[:-1] #remove trailing `|`
+        return info
+    info = "R5 Response, Unknown CMD"
+    return info
+
 
 class SdioState:
     def __init__(self):
@@ -330,6 +412,8 @@ class SdioState:
                 info = interpret_response2(bits)
             elif this_response_type == 3:
                 info = interpret_response3(bits)
+            elif this_response_type == 5:
+                info = interpret_response5(bits)
             else:
                 print("Unknown response type")
                 info = "R%s" % this_response_type
